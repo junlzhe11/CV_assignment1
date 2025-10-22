@@ -7,30 +7,44 @@ import numpy as np
 import torchvision.models as models
 import torchvision.transforms as transforms
 from tqdm import tqdm
+from ultralytics import YOLO
 
 #crop the instance region. For the images containing two instances, you need to crop both of them.
 def query_crop(query_path, txt_path, save_path):
     query_img = cv2.imread(query_path)
     query_img = query_img[:,:,::-1] #bgr2rgb
     txt = np.loadtxt(txt_path)     #load the coordinates of the bounding box
-    crop = query_img[int(txt[1]):int(txt[1] + txt[3]), int(txt[0]):int(txt[0] + txt[2]), :] #crop the instance region
+    crop = query_img[int(txt[0]):int(txt[0] + txt[2]), int(txt[1]):int(txt[1] + txt[3]), :] #crop the instance region (x, y)
     cv2.imwrite(save_path, crop[:,:,::-1])  #save the cropped region
     return crop
 
 def vgg_11_extraction(img, featsave_path):
-    resnet_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225])])
-    img_transform = resnet_transform(img) #normalize the input image and transform it to tensor.
-    img_transform = torch.unsqueeze(img_transform, 0) #Set batchsize as 1. You can enlarge the batchsize to accelerate.
+    # resnet_transform = transforms.Compose([
+    #     transforms.ToTensor(),
+    #     transforms.Normalize(mean=[0.485, 0.456, 0.406],
+    #                          std=[0.229, 0.224, 0.225])])
+    # img_transform = resnet_transform(img) #normalize the input image and transform it to tensor.
+    # img_transform = torch.unsqueeze(img_transform, 0) #Set batchsize as 1. You can enlarge the batchsize to accelerate.
 
     # initialize the weights pretrained on the ImageNet dataset, you can also use other backbones (e.g. ResNet, XceptionNet, AlexNet, ...)
     # and extract features from more than one layer.
-    vgg11 = models.vgg11(pretrained=True)
-    vgg11_feat_extractor = vgg11.features #define the feature extractor
-    vgg11_feat_extractor.eval()  #set the mode as evaluation
-    feats = vgg11(img_transform) # extract feature
+    yolo = YOLO("./data/model/yolo11n.pt").eval()
+    net= yolo.model
+    # vgg11 = models.vgg11(pretrained=True)
+    # vgg11_feat_extractor = vgg11.features #define the feature extractor
+    # vgg11_feat_extractor.eval()  #set the mode as evaluation
+    features = {}
+    def hook_fn(module, input, output):
+        features['feat'] = output
+    target_layer = net.model[22]
+    target_layer.register_forward_hook(hook_fn)
+    img_tensor = torch.from_numpy(img).permute(2,0,1).float().unsqueeze(0) / 255.0
+    with torch.no_grad():
+        _ = net(img_tensor)
+    feat_map = features['feat']  # tensor shape: [1, C, H, W]
+    # print("Feature map shape:", feat_map.shape)
+    # feats = vgg11(img_transform) # extract feature
+    feats = torch.mean(feat_map, dim=[2,3])
     feats_np = feats.cpu().detach().numpy() # convert tensor to numpy
     np.save(featsave_path, feats_np) # save the feature
 
@@ -41,20 +55,46 @@ def feat_extractor_gallery(gallery_dir, feat_savedir):
     for img_file in tqdm(os.listdir(gallery_dir)):
         img = cv2.imread(os.path.join(gallery_dir, img_file))
         img = img[:,:,::-1] #bgr2rgb
-        img_resize = cv2.resize(img, (224, 224), interpolation=cv2.INTER_CUBIC) # resize the image
+        img_resize = cv2.resize(img, (640, 640), interpolation=cv2.INTER_CUBIC) # resize the image
         featsave_path = os.path.join(feat_savedir, img_file.split('.')[0]+'.npy')
         vgg_11_extraction(img_resize, featsave_path)
 
+def box_query(query_path, txt_path, box_path): 
+    # 读取图片
+    img = cv2.imread(query_path)
+
+    # READ TXT
+    txt = np.loadtxt(txt_path)     #load the coordinates of the bounding box
+
+    # POINT(X, Y)
+    start_point = (int(txt[0]), int(txt[1]))
+    end_point = (int(txt[0] + txt[2]), int(txt[1] + txt[3]))
+    
+    
+    # 定义颜色 (B, G, R) 和线条粗细
+    color = (0, 0, 255)  # RED
+    thickness = 3
+
+    # 在图像上画矩形
+    cv2.rectangle(img, start_point, end_point, color, thickness)
+
+    # 保存或显示结果
+    cv2.imwrite(box_path, img)
+
+        
+      
 # Extract the query feature - 修改为处理50张查询图片
 def feat_extractor_query():
     query_dir = './data/query/'  # 查询图片目录
     txt_dir = './data/query_txt/'  # 查询文本目录
     cropped_query_dir = './data/cropped_query/'  # 裁剪后的查询图片目录
     query_feat_dir = './data/query_feat/'  # 查询特征目录
+    box_dir = './data/query_box' 
     
     # 创建目录（如果不存在）
     os.makedirs(cropped_query_dir, exist_ok=True)
     os.makedirs(query_feat_dir, exist_ok=True)
+    os.makedirs(box_dir, exist_ok=True)
     
     # 处理50张查询图片 (0.jpg 到 49.jpg)
     for i in tqdm(range(50), desc="Processing query images"):
@@ -63,6 +103,7 @@ def feat_extractor_query():
         txt_path = os.path.join(txt_dir, f'{i}.txt')
         save_path = os.path.join(cropped_query_dir, f'{i}.jpg')
         featsave_path = os.path.join(query_feat_dir, f'{i}_feats.npy')
+        box_path = os.path.join(box_dir, f'{i}_box.jpg')
         
         # 检查文件是否存在
         if not os.path.exists(query_path):
@@ -71,11 +112,14 @@ def feat_extractor_query():
         if not os.path.exists(txt_path):
             print(f"Warning: Text file {txt_path} does not exist, skipping...")
             continue
+
+        # box
+        box_query(query_path, txt_path, box_path)
         
         try:
             # 裁剪和特征提取
             crop = query_crop(query_path, txt_path, save_path)
-            crop_resize = cv2.resize(crop, (224, 224), interpolation=cv2.INTER_CUBIC)
+            crop_resize = cv2.resize(crop, (640, 640), interpolation=cv2.INTER_CUBIC)
             vgg_11_extraction(crop_resize, featsave_path)
             print(f"Successfully processed query image {i}")
         except Exception as e:
@@ -85,7 +129,7 @@ def main():
     feat_extractor_query()
     gallery_dir = './data/gallery/'
     feat_savedir = './data/gallery_feature/'
-    # feat_extractor_gallery(gallery_dir, feat_savedir)
+    feat_extractor_gallery(gallery_dir, feat_savedir)
 
 if __name__=='__main__':
     main()
