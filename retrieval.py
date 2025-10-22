@@ -40,11 +40,11 @@ def visulization(retrived, query):
     plt.show()
 
 if __name__ == '__main__':
-    query_path = './data/query_feat/query_feats.npy'
+    query_path = './data/query_feat/0_feats.npy'
     gallery_dir = './data/gallery_feature/'
     best_five = retrival_idx(query_path, gallery_dir) # retrieve top 5 matching images in the gallery.
     print(best_five)
     best_five.reverse()
-    query_path = './data/query/query.jpg'
+    query_path = './data/query/0.jpg'
     visulization(best_five, query_path) # Visualize the retrieval results
 

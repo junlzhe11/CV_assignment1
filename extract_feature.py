@@ -45,15 +45,41 @@ def feat_extractor_gallery(gallery_dir, feat_savedir):
         featsave_path = os.path.join(feat_savedir, img_file.split('.')[0]+'.npy')
         vgg_11_extraction(img_resize, featsave_path)
 
-# Extract the query feature
+# Extract the query feature - 修改为处理50张查询图片
 def feat_extractor_query():
-    query_path = './data/query/query.jpg'
-    txt_path = './data/query_txt/query.txt'
-    save_path = './data/cropped_query/query.jpg'
-    featsave_path = './data/query_feat/query_feats.npy'
-    crop = query_crop(query_path, txt_path, save_path)
-    crop_resize = cv2.resize(crop, (224, 224), interpolation=cv2.INTER_CUBIC)
-    vgg_11_extraction(crop_resize, featsave_path)
+    query_dir = './data/query/'  # 查询图片目录
+    txt_dir = './data/query_txt/'  # 查询文本目录
+    cropped_query_dir = './data/cropped_query/'  # 裁剪后的查询图片目录
+    query_feat_dir = './data/query_feat/'  # 查询特征目录
+    
+    # 创建目录（如果不存在）
+    os.makedirs(cropped_query_dir, exist_ok=True)
+    os.makedirs(query_feat_dir, exist_ok=True)
+    
+    # 处理50张查询图片 (0.jpg 到 49.jpg)
+    for i in tqdm(range(50), desc="Processing query images"):
+        # 构建文件路径
+        query_path = os.path.join(query_dir, f'{i}.jpg')
+        txt_path = os.path.join(txt_dir, f'{i}.txt')
+        save_path = os.path.join(cropped_query_dir, f'{i}.jpg')
+        featsave_path = os.path.join(query_feat_dir, f'{i}_feats.npy')
+        
+        # 检查文件是否存在
+        if not os.path.exists(query_path):
+            print(f"Warning: Query image {query_path} does not exist, skipping...")
+            continue
+        if not os.path.exists(txt_path):
+            print(f"Warning: Text file {txt_path} does not exist, skipping...")
+            continue
+        
+        try:
+            # 裁剪和特征提取
+            crop = query_crop(query_path, txt_path, save_path)
+            crop_resize = cv2.resize(crop, (224, 224), interpolation=cv2.INTER_CUBIC)
+            vgg_11_extraction(crop_resize, featsave_path)
+            print(f"Successfully processed query image {i}")
+        except Exception as e:
+            print(f"Error processing query image {i}: {e}")
 
 def main():
     feat_extractor_query()
