@@ -10,13 +10,45 @@ from tqdm import tqdm
 from ultralytics import YOLO
 
 #crop the instance region. For the images containing two instances, you need to crop both of them.
-def query_crop(query_path, txt_path, save_path):
+def query_crops(query_path, txt_path, save_path):
     query_img = cv2.imread(query_path)
     query_img = query_img[:,:,::-1] #bgr2rgb
     txt = np.loadtxt(txt_path)     #load the coordinates of the bounding box
-    crop = query_img[int(txt[0]):int(txt[0] + txt[2]), int(txt[1]):int(txt[1] + txt[3]), :] #crop the instance region (x, y)
-    cv2.imwrite(save_path, crop[:,:,::-1])  #save the cropped region
-    return crop
+    
+    crops = []  # Array to store all crops
+    # Handle single bounding box (1D array)
+    if txt.ndim == 1:
+        if len(txt) == 4:
+            # Single bounding box
+            x, y, w, h = txt
+            crop = query_img[int(y):int(y + h), int(x):int(x + w), :]
+            cv2.imwrite(save_path, crop[:,:,::-1])
+            crops.append(crop)
+        else:
+            # Multiple boxes in one row (shouldn't happen with 1-2 boxes)
+            print(f"Unexpected number of coordinates: {len(txt)}")
+    
+    # Handle multiple bounding boxes (2D array)
+    elif txt.ndim == 2:
+        for i, bbox in enumerate(txt):
+            x, y, w, h = bbox[:4]
+            crop = query_img[int(y):int(y + h), int(x):int(x + w), :]
+            
+            # Save each crop with appropriate filename
+            if len(txt) == 1:
+                # Single box - use original save_path
+                cv2.imwrite(save_path, crop[:,:,::-1])
+            else:
+                # Multiple boxes - add index to filename
+                base_name = os.path.splitext(save_path)[0]
+                ext = os.path.splitext(save_path)[1]
+                individual_save_path = f"{base_name}_box{i}{ext}"
+                cv2.imwrite(individual_save_path, crop[:,:,::-1])
+            
+            crops.append(crop)
+    
+    print(f"Cropped {len(crops)} instances from {query_path}")
+    return crops
 
 def vgg_11_extraction(img, featsave_path):
     # resnet_transform = transforms.Compose([
@@ -59,29 +91,89 @@ def feat_extractor_gallery(gallery_dir, feat_savedir):
         featsave_path = os.path.join(feat_savedir, img_file.split('.')[0]+'.npy')
         vgg_11_extraction(img_resize, featsave_path)
 
-def box_query(query_path, txt_path, box_path): 
-    # 读取图片
+def box_query(query_path, txt_path, box_path):
+    # Read image
     img = cv2.imread(query_path)
-
-    # READ TXT
-    txt = np.loadtxt(txt_path)     #load the coordinates of the bounding box
-
-    # POINT(X, Y)
-    start_point = (int(txt[0]), int(txt[1]))
-    end_point = (int(txt[0] + txt[2]), int(txt[1] + txt[3]))
+    if img is None:
+        print(f"Error: Could not load image {query_path}")
+        return
     
-    
-    # 定义颜色 (B, G, R) 和线条粗细
-    color = (0, 0, 255)  # RED
-    thickness = 3
-
-    # 在图像上画矩形
-    cv2.rectangle(img, start_point, end_point, color, thickness)
-
-    # 保存或显示结果
-    cv2.imwrite(box_path, img)
-
+    try:
+        # Read bounding box coordinates
+        bboxes = np.loadtxt(txt_path)
         
+        # Handle all possible cases
+        if bboxes.size == 0:
+            # No bounding boxes
+            print("No bounding boxes found")
+            cv2.imwrite(box_path, img)
+            return
+            
+        elif bboxes.ndim == 0:
+            # Single scalar (unlikely for bbox data)
+            print("Unexpected scalar data")
+            return
+            
+        elif bboxes.ndim == 1:
+            # 1D array - could be single bbox or multiple in one line
+            if len(bboxes) == 4:
+                # Single bounding box with 4 coordinates
+                bboxes = [bboxes]
+            else:
+                # Multiple boxes concatenated in one row
+                # Ensure total length is divisible by 4
+                if len(bboxes) % 4 == 0:
+                    bboxes = bboxes.reshape(-1, 4)
+                else:
+                    print(f"Warning: Invalid number of coordinates ({len(bboxes)})")
+                    return
+        
+        print(f"Found {len(bboxes)} bounding boxes")
+        
+        # Define colors for different boxes
+        colors = [
+            (0, 0, 255),    # RED
+            (255, 0, 0),    # BLUE  
+            (0, 255, 0),    # GREEN
+            (255, 255, 0),  # CYAN
+            (255, 0, 255),  # MAGENTA
+            (0, 255, 255),  # YELLOW
+            (128, 0, 128),  # PURPLE
+            (255, 165, 0)   # ORANGE
+        ]
+        
+        thickness = 3
+        
+        # Draw each bounding box
+        for i, bbox in enumerate(bboxes):
+            # Format: x y width height
+            x, y, width, height = map(int, bbox[:4])
+            
+            # Calculate end point (x2, y2)
+            x2 = x + width
+            y2 = y + height
+            
+            # Get color
+            color = colors[i % len(colors)]
+            
+            # Draw rectangle
+            cv2.rectangle(img, (x, y), (x2, y2), color, thickness)
+            
+            # Add box number label
+            label = f"Box {i+1}"
+            cv2.putText(img, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 
+                        0.7, color, 2)
+            
+            print(f"Box {i+1}: ({x}, {y}) width={width}, height={height} -> ({x2}, {y2})")
+        
+        # Save the image with all bounding boxes
+        cv2.imwrite(box_path, img)
+        print(f"Image with {len(bboxes)} bounding boxes saved to: {box_path}")
+        
+    except Exception as e:
+        print(f"Error processing {query_path}: {e}")
+        import traceback
+        traceback.print_exc()
       
 # Extract the query feature - 修改为处理50张查询图片
 def feat_extractor_query():
@@ -97,39 +189,38 @@ def feat_extractor_query():
     os.makedirs(box_dir, exist_ok=True)
     
     # 处理50张查询图片 (0.jpg 到 49.jpg)
-    for i in tqdm(range(50), desc="Processing query images"):
+    for queryIndex in tqdm(range(50), desc="Processing query images"):
         # 构建文件路径
-        query_path = os.path.join(query_dir, f'{i}.jpg')
-        txt_path = os.path.join(txt_dir, f'{i}.txt')
-        save_path = os.path.join(cropped_query_dir, f'{i}.jpg')
-        featsave_path = os.path.join(query_feat_dir, f'{i}_feats.npy')
-        box_path = os.path.join(box_dir, f'{i}_box.jpg')
-        
-        # 检查文件是否存在
-        if not os.path.exists(query_path):
-            print(f"Warning: Query image {query_path} does not exist, skipping...")
-            continue
-        if not os.path.exists(txt_path):
-            print(f"Warning: Text file {txt_path} does not exist, skipping...")
-            continue
-
+        query_path = os.path.join(query_dir, f'{queryIndex}.jpg')
+        txt_path = os.path.join(txt_dir, f'{queryIndex}.txt')
+        save_path = os.path.join(cropped_query_dir, f'{queryIndex}.jpg')
+        box_path = os.path.join(box_dir, f'{queryIndex}_box.jpg')
         # box
         box_query(query_path, txt_path, box_path)
         
         try:
             # 裁剪和特征提取
-            crop = query_crop(query_path, txt_path, save_path)
-            crop_resize = cv2.resize(crop, (640, 640), interpolation=cv2.INTER_CUBIC)
-            vgg_11_extraction(crop_resize, featsave_path)
-            print(f"Successfully processed query image {i}")
+            crops = query_crops(query_path, txt_path, save_path)  # 修正：query_crops -> query_crop
+            
+            # 檢查crops是否為空
+            if crops is None or len(crops) == 0:
+                print(f"No crops found for query image {queryIndex}")
+                continue
+                
+            for cropIndex in range(len(crops)):
+                crop = crops[cropIndex]
+                crop_resize = cv2.resize(crop, (640, 640), interpolation=cv2.INTER_CUBIC)
+                featsave_path = os.path.join(query_feat_dir, f'query{queryIndex}_feat{cropIndex}.npy')  # 修正：image{i} -> {i}
+                vgg_11_extraction(crop_resize, featsave_path)
+                print(f"Successfully processed image {queryIndex} crop {cropIndex} from query image {queryIndex}")  # 修正：更明確的日誌    
         except Exception as e:
-            print(f"Error processing query image {i}: {e}")
+            print(f"Error processing query image {queryIndex}: {e}")
 
 def main():
     feat_extractor_query()
     gallery_dir = './data/gallery/'
     feat_savedir = './data/gallery_feature/'
-    feat_extractor_gallery(gallery_dir, feat_savedir)
+    # feat_extractor_gallery(gallery_dir, feat_savedir)
 
 if __name__=='__main__':
     main()
